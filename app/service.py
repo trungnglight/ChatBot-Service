@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Body, UploadFile, status, HTTPException, Path
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from app.chatbot import ChatBot
 from app.chroma import VectorDB
 from pydantic import BaseModel
@@ -70,8 +70,11 @@ def get_response_for_chat(
             status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found"
         )
     history = chat_history[chat_id]
-    response, new_history = chatbot.generate_answer(message, history)
-    chat_history[chat_id] = new_history
+    response = chatbot.generate_answer_text(message, history)
+    chat_history[chat_id] = history + [
+        HumanMessage(content=message),
+        AIMessage(content=response),
+    ]
     return ChatMessage(user_id=bot_id, chat_id=chat_id, message=response)
 
 

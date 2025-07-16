@@ -1,7 +1,7 @@
 import os
 import requests
 import pandas as pd
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Iterator
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
 from langchain.output_parsers import OutputFixingParser
@@ -206,12 +206,31 @@ class ChatBot:
 
         return {**state, "response": response}
 
-    def generate_answer(
+    def generate_answer_stream(
         self,
         user_input: str,
         chat_history: list[BaseMessage] = [],
         file: BytesIO | None = None,
-    ) -> tuple[str, list[BaseMessage]]:
+    ) -> Iterator:
+        state: State = {
+            "input": user_input,
+            "chat_history": chat_history,
+            "response": "",
+            "file": file,
+        }
+        result = self.graph.stream(state, stream_mode="messages")
+        # new_history = chat_history + [
+        #     HumanMessage(content=user_input),
+        #     AIMessage(content=result["response"]),
+        # ]
+        return result
+
+    def generate_answer_text(
+        self,
+        user_input: str,
+        chat_history: list[BaseMessage] = [],
+        file: BytesIO | None = None,
+    ) -> str:
         state: State = {
             "input": user_input,
             "chat_history": chat_history,
@@ -219,11 +238,7 @@ class ChatBot:
             "file": file,
         }
         result = self.graph.invoke(state)
-        new_history = chat_history + [
-            HumanMessage(content=user_input),
-            AIMessage(content=result["response"]),
-        ]
-        return result["response"], new_history
+        return result["response"]
 
 
 # === USAGE EXAMPLE ===
@@ -235,5 +250,6 @@ if __name__ == "__main__":
         user_input = input("User: ")
         if user_input.strip().lower() in ["exit", "quit"]:
             break
-        response, history = bot.generate_answer(user_input, history)
-        print("Bot:", response)
+        response, history = bot.generate_answer_stream(user_input, history)
+        for chunk in response:
+            print(chunk[0].content)

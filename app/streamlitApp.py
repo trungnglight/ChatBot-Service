@@ -1,14 +1,18 @@
 import streamlit as st
 from app.chatbot import ChatBot
 from app.chroma import VectorDB
+from langchain_core.messages import HumanMessage, AIMessage
+from typing import Iterator
 import uuid
 
 # Prompts
 SYSTEM_MESSAGE = "Bạn là một trợ lý ảo hữu ích. Câu trả lời của bạn ngắn gọn và vào thẳng trọng tâm của vấn đề."
-SUMMARY_MESSAGE = (
-    "Dựa trên câu trả lời sau, hãy tạo một tiêu đề ngắn gọn (tối đa 7 từ) "
-    "để mô tả nội dung chính của đoạn hội thoại."
-)
+SUMMARY_MESSAGE = "Dựa trên câu trả lời sau, hãy tạo một tiêu đề ngắn gọn (tối đa 7 từ) để mô tả nội dung chính của đoạn hội thoại. Chỉ trả lời tiêu đề đó."
+
+
+def response_wrapper(response_stream: Iterator):
+    for chunk in response_stream:
+        yield chunk[0].content
 
 
 class ChatBotPage:
@@ -38,7 +42,9 @@ class ChatBotPage:
         database = _self.init_database()
 
         # Sidebar: User login
-        st.sidebar.text_input("Nhập tên người dùng", key="user_id")
+        st.sidebar.text_input("Nhập tên người dùng", key="user_id", on_change=l)
+        if ss.user_id not in ss.user_list:
+            ss.user_list.append(ss.user_id)
         ss.user_chat_list.setdefault(ss.user_id, [])
 
         # Sidebar: Upload documents
@@ -62,23 +68,23 @@ class ChatBotPage:
 
         # Sidebar: Chat list
         st.sidebar.title("Các cuộc nói chuyện")
-        for cid in ss.user_chat_list[ss.user_id]:
+        for id in ss.user_chat_list[ss.user_id]:
             col1, col2 = st.sidebar.columns([4, 1])
-            title = ss.chat_list.get(cid, "No Title")
-            if col1.button(title, key=f"chatbtn_{cid}"):
-                st.query_params["chat_id"] = cid
+            title = ss.chat_list.get(id, "No Title")
+            if col1.button(title, key=f"chatbtn_{id}"):
+                st.query_params["chat_id"] = id
                 st.rerun()
-            if col2.button("🗑️", key=f"delete_{cid}"):
-                ss.delete_chat_id = cid
+            if col2.button("🗑️", key=f"delete_{id}"):
+                ss.delete_chat_id = id
 
         # Handle deletion
         if ss.delete_chat_id:
-            cid = ss.delete_chat_id
-            if cid in ss.user_chat_list[ss.user_id]:
-                ss.user_chat_list[ss.user_id].remove(cid)
-            ss.chat_list.pop(cid, None)
-            ss.chat_history.pop(cid, None)
-            if query_params.get("chat_id") == cid:
+            id = ss.delete_chat_id
+            if id in ss.user_chat_list[ss.user_id]:
+                ss.user_chat_list[ss.user_id].remove(id)
+            ss.chat_list.pop(id, None)
+            ss.chat_history.pop(id, None)
+            if query_params.get("chat_id") == id:
                 st.query_params.clear()
             ss.delete_chat_id = None
             st.rerun()
@@ -98,25 +104,46 @@ class ChatBotPage:
             if not current_chat_id:
                 # New chat is created now
                 new_id = str(uuid.uuid4())
+                if ss.user_id not in ss.user_chat_list:
+                    ss.user_chat_list[ss.user_id] = []
                 ss.user_chat_list[ss.user_id].append(new_id)
 
+                # Write current message
+                with st.chat_message("human"):
+                    st.write(ss.message)
+
                 # Step 1: Generate AI response
-                response, ss.chat_history[new_id] = chatbot.generate_answer(
-                    ss.message, []
-                )
+                response = chatbot.generate_answer_text(ss.message)
+                with st.chat_message("ai"):
+                    st.write(response)
+                ss.chat_history[new_id] = [
+                    HumanMessage(content=ss.message),
+                    AIMessage(content=response),
+                ]
 
                 # Step 2: Generate short title from response
                 summary_bot = ChatBot(SUMMARY_MESSAGE)
-                summary, _ = summary_bot.generate_answer(response)
+                summary = summary_bot.generate_answer_text(response)
 
                 # Step 3: Save to session
                 ss.chat_list[new_id] = summary
                 st.query_params["chat_id"] = new_id
                 st.rerun()
             else:
+                if current_chat_id and current_chat_id in ss.chat_history:
+                    for msg in ss.chat_history[current_chat_id]:
+                        with st.chat_message("user" if msg.type == "human" else "ai"):
+                            st.write_stream(msg.content)
+                with st.chat_message("human"):
+                    st.write(ss.message)
                 chat_hist = ss.chat_history.setdefault(current_chat_id, [])
-                response, chat_hist = chatbot.generate_answer(ss.message, chat_hist)
-                ss.chat_history[current_chat_id] = chat_hist
+                response = chatbot.generate_answer_text(ss.message, chat_hist)
+                with st.chat_message("ai"):
+                    st.write(response)
+                ss.chat_history[current_chat_id] = chat_hist + [
+                    HumanMessage(content=ss.message),
+                    AIMessage(content=response),
+                ]
                 ss.chat_send = False
                 st.rerun()
 
