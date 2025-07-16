@@ -1,2 +1,2 @@
 # ChatBot Service
-ChatBot service with FastAPI
+ChatBot service with FastAPI and Streamlit for interaction.
