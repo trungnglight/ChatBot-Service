@@ -42,7 +42,9 @@ class ChatBotPage:
         database = _self.init_database()
 
         # Sidebar: User login
-        st.sidebar.text_input("Nhập tên người dùng", key="user_id", on_change=l)
+        st.sidebar.text_input(
+            "Nhập tên người dùng", key="user_id", on_change=st.query_params.clear()
+        )
         if ss.user_id not in ss.user_list:
             ss.user_list.append(ss.user_id)
         ss.user_chat_list.setdefault(ss.user_id, [])
