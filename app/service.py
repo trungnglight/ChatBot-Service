@@ -12,10 +12,10 @@ chat_list = ["94a10151-3fd6-443e-a3c8-31cc2b7ca988"]
 chat_history = {"94a10151-3fd6-443e-a3c8-31cc2b7ca988": []}
 
 app = FastAPI()
-SYSTEM_MESSAGE = "Bạn là một trợ lý ảo hữu ích. Câu trả lời của bạn ngắn gọn và vào thẳng trọng tâm của vấn đề"
+SYSTEM_MESSAGE = "Bạn là một trợ lý AI chuyên phân tích dữ liệu và tóm tắt nội dung từ các tệp Excel, văn bản, PDF và Word. Trả lời chính xác và rõ ràng theo yêu cầu của người dùng."
 
+vectorDB = VectorDB("docling_file")
 chatbot = ChatBot(SYSTEM_MESSAGE)
-vectorDB = VectorDB("file_upload")
 bot_id = "chatbot"
 
 
@@ -58,8 +58,10 @@ def create_new_chat(
 )
 def get_response_for_chat(
     user_id: Annotated[str, Body(embed=True)],
+    file: UploadFile,
     chat_id: Annotated[str, Path()],
     message: Annotated[str, Body(embed=True)],
+    intent: Annotated[str, Body(embed=True)],
 ):
     if (
         chat_id not in chat_list
@@ -70,7 +72,16 @@ def get_response_for_chat(
             status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found"
         )
     history = chat_history[chat_id]
-    response = chatbot.generate_answer_text(message, history)
+    if file:
+        response = chatbot.generate_answer(
+            message,
+            history,
+            file=file.file,
+            content_type=file.content_type,
+            intent=intent,
+        )
+    else:
+        response = chatbot.generate_answer(message, history, intent="chat")
     chat_history[chat_id] = history + [
         HumanMessage(content=message),
         AIMessage(content=response),
@@ -87,5 +98,9 @@ def get_chat(chat_id: Annotated[str, Path(embed=True)]):
 
 @app.post("/upload_file")
 def upload_file(uploaded_file: UploadFile):
-    return {"file_type": uploaded_file.content_type}
-    # vectorDB.add_file(uploaded_file.file, uploaded_file.content_type)
+    text_chunk = vectorDB.add_file(
+        uploaded_file.filename,
+        uploaded_file.file,
+        uploaded_file.content_type,
+    )
+    return {"text_chunk": text_chunk}
