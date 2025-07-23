@@ -118,7 +118,7 @@ class ChatBotPage:
 
         # Greeting chat message with intent options if new or empty chat
 
-        st.radio(
+        st.selectbox(
             label="Intent",
             options=["chat", "analyze_excel", "summarize_text"],
             format_func=lambda x: {
@@ -127,8 +127,9 @@ class ChatBotPage:
                 "summarize_text": "📝 Tóm tắt nội dung tài liệu",
             }[x],
             key="intent",
-            horizontal=False,
+            # horizontal=False,
             label_visibility="collapsed",
+            width=275,
         )
 
         # Input field
