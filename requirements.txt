@@ -1,0 +1,9 @@
+chromadb
+docling
+fastapi
+langchain
+langchain-chroma
+langchain-openai
+pandas
+python-magic-bin
+streamlit
