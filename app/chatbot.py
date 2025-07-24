@@ -24,6 +24,7 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 LL_MODEL = os.getenv("LL_MODEL", "llama3.2:3b")
 OLLAMA_API_KEY = SecretStr("ollama")
 
+# System prompt to input to LLM
 PROMPT = PromptTemplate.from_template(
     """
 {system_message}
@@ -40,17 +41,20 @@ Answer:
 )
 
 
+# Enum for all intent
 class IntentEnum(str, Enum):
     analyze_excel = "analyze_excel"
     summarize_text = "summarize_text"
     chat = "chat"
 
 
+# Form for PydanticOutputParser
 class FileIntent(BaseModel):
     intent: IntentEnum
     instruction: str | None = None
 
 
+# Prompt to force the LLM to return in correct template
 intent_prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -74,6 +78,7 @@ Only return JSON.
     ]
 )
 
+# LLM for intent detection
 intent_llm = ChatOpenAI(
     base_url=f"{OLLAMA_HOST}/v1/",
     model=LL_MODEL,
@@ -81,17 +86,15 @@ intent_llm = ChatOpenAI(
     temperature=0,
 )
 
+
 intent_parser = PydanticOutputParser(pydantic_object=FileIntent)
-intent_parser = OutputFixingParser.from_llm(parser=intent_parser, llm=intent_llm)
+intent_parser = OutputFixingParser.from_llm(
+    parser=intent_parser, llm=intent_llm
+)  # Checking LLM output and fixing it
 intent_chain = intent_prompt | intent_llm | intent_parser
 
 
-def agent_executor(agent, tools):
-    return AgentExecutor.from_agent_and_tools(
-        agent=agent, tools=tools, handle_parsing_errors=True
-    )
-
-
+# Auto clean Excel file for analysis
 def auto_clean_excel(file_stream: BinaryIO) -> pd.DataFrame:
     file_stream.seek(0)
     df = pd.read_excel(file_stream)
@@ -106,6 +109,7 @@ def auto_clean_excel(file_stream: BinaryIO) -> pd.DataFrame:
     return df
 
 
+# Return the Excel agent analysis
 def analyze_dataframe_with_agent(df: pd.DataFrame, instruction: str) -> str:
     agent = create_pandas_dataframe_agent(
         llm=ChatOpenAI(
@@ -141,6 +145,7 @@ def analyze_dataframe_with_agent(df: pd.DataFrame, instruction: str) -> str:
     return analysis if isinstance(analysis, str) else analysis["output"]
 
 
+# Create Dataframe from the Excel file for the agent
 def analyze_excel_with_cleanup(file_stream: BinaryIO, instruction: str) -> str:
     try:
         df = auto_clean_excel(file_stream)
@@ -149,6 +154,7 @@ def analyze_excel_with_cleanup(file_stream: BinaryIO, instruction: str) -> str:
         return f"Error processing Excel file: {str(e)}"
 
 
+# Use Docling to read file content and call LLM summarize it.
 def summarize_with_docling(file: BinaryIO, content_type: str, instruction: str) -> str:
     try:
         name = {
@@ -179,6 +185,7 @@ def summarize_with_docling(file: BinaryIO, content_type: str, instruction: str) 
         return f"[Docling extraction failed] {str(e)}"
 
 
+# State object containing all info needed for the model
 class State(TypedDict):
     input: str
     response: str
@@ -188,7 +195,9 @@ class State(TypedDict):
     intent: IntentEnum | None
 
 
+# ChatBot class
 class ChatBot:
+    # Constructor
     def __init__(self, system_message: str) -> None:
         self.system_message = system_message
         requests.post(f"{OLLAMA_HOST}/api/pull", json={"model": LL_MODEL})
@@ -209,11 +218,13 @@ class ChatBot:
         graph_builder.add_edge("generate", END)
         self.graph = graph_builder.compile()
 
+    # Return readable chat history
     def format_chat_history(self, history: list[BaseMessage]) -> str:
         return "\n\n".join(
             f"{'User' if m.type == 'human' else 'AI'}: {m.content}" for m in history
         )
 
+    # Calling the intent chain to detect user message intention
     def detect_intent(self, message: str) -> FileIntent:
         try:
             return intent_chain.invoke({"input": message})
@@ -221,12 +232,24 @@ class ChatBot:
             print(f"[Intent detection error] {e}")
             return FileIntent(intent=IntentEnum.chat)
 
+    def process_response(self, llm_output) -> str:
+        response = (
+            llm_output.content if hasattr(llm_output, "content") else str(llm_output)
+        )
+
+        response = response if isinstance(response, str) else response[0]
+        return response
+
+    # Get message from node
     def generate_node(self, state: State) -> State:
+        # Get all info from State
         chat_str = self.format_chat_history(state["chat_history"])
         user_input = state["input"]
         file = state["file"]
         content_type = state["content_type"]
+        response = "No answer!"
         print("content_type: " + str(content_type))
+        # Detect file type if needed
         if content_type is None and file:
             try:
                 file.seek(0)
@@ -239,6 +262,7 @@ class ChatBot:
         if isinstance(file, SpooledTemporaryFile):
             file = BytesIO(file.read())
 
+        # Detect user intention from message
         intent = FileIntent(intent=IntentEnum.chat)
         if state["intent"] is not None:
             intent.intent = state["intent"]
@@ -246,6 +270,7 @@ class ChatBot:
             if user_input:
                 intent = self.detect_intent(user_input)
 
+        # If there is a file
         if file and content_type:
             if intent.intent == IntentEnum.analyze_excel:
                 print("Excel!")
@@ -262,13 +287,18 @@ class ChatBot:
                 response = summarize_with_docling(
                     file, content_type, intent.instruction or "Tóm tắt nội dung văn bản"
                 )
+            # If there is a file but the intention is "chat" we check intention again.
             elif intent.intent == IntentEnum.chat:
                 print("Chat!")
                 if user_input:
                     intent = self.detect_intent(user_input)
                     if intent.intent == IntentEnum.analyze_excel:
                         response = analyze_excel_with_cleanup(
-                            file, intent.instruction or "analyze"
+                            file,
+                            intent.instruction
+                            or "Analyze- Summarize the sheet names and dimensions."
+                            "- For each sheet: describe columns, types, missing values, and show basic stats."
+                            "- Provide insights and suggestions for next steps.",
                         )
                         response = f"[Excel Analysis Result]\n{response}"
                     elif intent.intent == IntentEnum.summarize_text:
@@ -277,6 +307,7 @@ class ChatBot:
                             content_type,
                             intent.instruction or "Tóm tắt nội dung văn bản",
                         )
+                # If intention is still "chat" we ignore the file and response to the chat
                 else:
                     llm_output = self.llm_chain.invoke(
                         {
@@ -286,14 +317,8 @@ class ChatBot:
                         }
                     )
 
-                    response = (
-                        llm_output.content
-                        if hasattr(llm_output, "content")
-                        else str(llm_output)
-                    )
-
-                    response = response if isinstance(response, str) else response[0]
-
+                    response = self.process_response(llm_output)
+        # If there is no file
         elif intent.intent == IntentEnum.analyze_excel:
             response = f"[Error] No file was uploaded, but intent was {intent.intent}"
         elif intent.intent == IntentEnum.summarize_text:
@@ -305,13 +330,7 @@ class ChatBot:
                 }
             )
 
-            response = (
-                llm_output.content
-                if hasattr(llm_output, "content")
-                else str(llm_output)
-            )
-
-            response = response if isinstance(response, str) else response[0]
+            response = self.process_response(llm_output)
         else:
             llm_output = self.llm_chain.invoke(
                 {
@@ -320,16 +339,12 @@ class ChatBot:
                     "chat_history": chat_str,
                 }
             )
-            response = (
-                llm_output.content
-                if hasattr(llm_output, "content")
-                else str(llm_output)
-            )
-
-            response = response if isinstance(response, str) else response[0]
+            response = self.process_response(llm_output)
+        print(f"Intent: {intent}\nResponse: {response}")
 
         return {**state, "response": response}
 
+    # Get all data and pass it to the llm chain
     def generate_answer(
         self,
         user_input: str,
@@ -350,6 +365,7 @@ class ChatBot:
         return result["response"]
 
 
+# Main for testing purpose.
 if __name__ == "__main__":
     import mimetypes
 

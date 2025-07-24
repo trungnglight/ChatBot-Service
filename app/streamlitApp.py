@@ -14,12 +14,14 @@ SYSTEM_MESSAGE = "Bạn là một trợ lý AI chuyên phân tích dữ liệu v
 SUMMARY_MESSAGE = "Dựa trên câu trả lời sau, hãy tạo một tiêu đề ngắn gọn (tối đa 7 từ) để mô tả nội dung chính của đoạn hội thoại. Chỉ trả lời tiêu đề đó."
 
 
+# Clear query parameters from link as WidgetCallback
 def clear_query_param() -> None:
     st.query_params.clear()
     st.rerun()
 
 
 class ChatBotPage:
+    # Constructor (Set default value)
     def __init__(_self):
         ss = st.session_state
         ss.setdefault("chat_messages", [])
@@ -33,6 +35,7 @@ class ChatBotPage:
         ss.setdefault("uploaded_files", {})
         ss.setdefault("chat_uploaded_files", {})
 
+    # Create ChatBot, VectorDB and save to cache
     @st.cache_resource(ttl=6000, show_spinner="Đang khởi tạo ChatBot...")
     def init_model(_self):
         return ChatBot(SYSTEM_MESSAGE)
@@ -41,11 +44,14 @@ class ChatBotPage:
     def init_database(_self):
         return VectorDB("local_doc")
 
+    # Main website function
     def load_chatbot(_self):
+        # Logo
         st.logo(
             image=".\\images\\logo.png",
             size="large",
         )
+        # Set current chat and create all cache object
         ss = st.session_state
         query_params = st.query_params
         current_chat_id = query_params.get("chat_id")
@@ -114,10 +120,9 @@ class ChatBotPage:
             st.rerun()
 
         # Main section
-        st.header("Trò chuyện")
+        st.title("Trò chuyện")
 
-        # Greeting chat message with intent options if new or empty chat
-
+        # Intent selection box for easy changing
         st.selectbox(
             label="Intent",
             options=["chat", "analyze_excel", "summarize_text"],
@@ -141,7 +146,9 @@ class ChatBotPage:
             on_submit=lambda: (ss.update({"chat_send": True})),
         )
 
+        # Trigger on chat_input message sent
         if ss.chat_send and ss.message:
+            # Get uploaded file and put into a temporary list
             filedata = (
                 ss.message.files[-1]
                 if hasattr(ss.message, "files") and ss.message.files
@@ -150,13 +157,20 @@ class ChatBotPage:
             if filedata:
                 ss.uploaded_files["temp_input"] = filedata.getvalue()
 
+            # New chat
             if not current_chat_id:
+
+                # Create new id and add to storage
                 new_id = str(uuid.uuid4())
                 if ss.user_id not in ss.user_chat_list:
                     ss.user_chat_list[ss.user_id] = []
                 ss.user_chat_list[ss.user_id].append(new_id)
+
+                # Print out user message
                 with st.chat_message("human"):
                     st.write(ss.message.text)
+
+                # Generate AI message
                 response = chatbot.generate_answer(
                     user_input=ss.message.text,
                     chat_history=[],
@@ -167,12 +181,17 @@ class ChatBotPage:
                     ),
                     intent=ss.intent,
                 )
-                with st.chat_message("ai"):
-                    st.write(response)
+
+                # with st.chat_message("ai"):
+                #     st.write(response)
+
+                # Write result to chat history
                 ss.chat_history[new_id] = [
                     HumanMessage(content=ss.message.text),
                     AIMessage(content=response),
                 ]
+
+                # Create a summary as title for the chat and save it
                 summary = chatbot.generate_answer(
                     user_input="Summarise this in 5 words. Return only the summary: "
                     + response,
@@ -180,17 +199,23 @@ class ChatBotPage:
                     file=None,
                     intent="chat",
                 )
-
                 ss.chat_list[new_id] = summary
+
+                # Redirect to newly created chat
                 st.query_params["chat_id"] = new_id
                 st.rerun()
+
+            # Existing chat
             else:
+                # Show previous message
                 if current_chat_id and current_chat_id in ss.chat_history:
                     for msg in ss.chat_history[current_chat_id]:
                         with st.chat_message("user" if msg.type == "human" else "ai"):
                             st.write(msg.content)
                 with st.chat_message("human"):
                     st.write(ss.message.text)
+
+                # Get chat history and generate AI message with it
                 chat_hist = ss.chat_history.setdefault(current_chat_id, [])
                 response = chatbot.generate_answer(
                     user_input=ss.message.text,
@@ -202,8 +227,10 @@ class ChatBotPage:
                     ),
                     intent=ss.intent,
                 )
-                with st.chat_message("ai"):
-                    st.write(response)
+                # with st.chat_message("ai"):
+                #     st.write(response)
+
+                # Add new messages to chat history
                 ss.chat_history[current_chat_id] = chat_hist + [
                     HumanMessage(content=ss.message.text),
                     AIMessage(content=response),
@@ -211,6 +238,7 @@ class ChatBotPage:
                 ss.chat_send = False
                 st.rerun()
 
+        # Print out all message after the rerun clear it out.
         if current_chat_id and current_chat_id in ss.chat_history:
             for msg in ss.chat_history[current_chat_id]:
                 with st.chat_message("user" if msg.type == "human" else "ai"):
