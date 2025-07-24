@@ -62,7 +62,7 @@ Analyze the input carefully and return a JSON object with:
 - 'instruction': a clear and specific instruction the assistant should follow when processing the file (optional for 'chat' intent).
 
 Examples:
-- For Excel analysis: 'intent': 'analyze_excel', 'instruction': 'Get the average age of participants.'
+- For Excel analysis: 'intent': 'analyze_excel', 'instruction': 'Get the average age of participants. Get the value with the highest percentage in each column'
 - For summarization: 'intent': 'summarize_text', 'instruction': 'Summarize the document in Vietnamese.'
 - For general chat: 'intent': 'chat'.
 
@@ -143,10 +143,13 @@ def summarize_with_docling(file: BinaryIO, content_type: str, instruction: str) 
 
         file.seek(0)
         stream = BytesIO(file.read())
-
-        converter = DocumentConverter()
-        doc = converter.convert(DocumentStream(name=name, stream=stream))
-        markdown = doc.document.export_to_markdown()
+        markdown = ""
+        if content_type == "text/plain":
+            markdown = stream.getvalue().decode("utf-8")
+        else:
+            converter = DocumentConverter()
+            doc = converter.convert(DocumentStream(name=name, stream=stream))
+            markdown = doc.document.export_to_markdown()
 
         summarizer = ChatOpenAI(
             base_url=f"{OLLAMA_HOST}/v1/",
@@ -179,7 +182,7 @@ class ChatBot:
             model=LL_MODEL,
             api_key=OLLAMA_API_KEY,
             temperature=0.4,
-            max_completion_tokens=800,
+            max_completion_tokens=2000,
             top_p=0.9,
         )
         self.llm_chain = PROMPT | self.llm
@@ -207,10 +210,12 @@ class ChatBot:
         user_input = state["input"]
         file = state["file"]
         content_type = state["content_type"]
+        print("content_type: " + str(content_type))
         if content_type is None and file:
             try:
                 file.seek(0)
                 content_type = magic.from_buffer(file.read(2048), mime=True)
+                print(content_type)
                 file.seek(0)
             except Exception:
                 content_type = "application/octet-stream"
@@ -226,15 +231,18 @@ class ChatBot:
 
         if file and content_type:
             if intent.intent == IntentEnum.analyze_excel:
+                print("Excel!")
                 response = analyze_excel_with_cleanup(
-                    file, intent.instruction or "analyze"
+                    file, intent.instruction or "Phân tích các cột của tệp Excel"
                 )
                 response = f"[Excel Analysis Result]\n{response}"
             elif intent.intent == IntentEnum.summarize_text:
+                print("Summarize!")
                 response = summarize_with_docling(
                     file, content_type, intent.instruction or "Tóm tắt nội dung văn bản"
                 )
             elif intent.intent == IntentEnum.chat:
+                print("Chat!")
                 intent = self.detect_intent(user_input)
                 if intent.intent == IntentEnum.analyze_excel:
                     response = analyze_excel_with_cleanup(

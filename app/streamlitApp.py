@@ -26,8 +26,6 @@ class ChatBotPage:
         ss.setdefault("delete_chat_id", None)
         ss.setdefault("intent", "chat")
         ss.setdefault("chat_intents", {})
-        ss.setdefault("uploaded_files", {})
-        ss.setdefault("chat_uploaded_files", {})
 
     @st.cache_resource(ttl=6000, show_spinner="Đang khởi tạo ChatBot...")
     def init_model(_self):
@@ -137,17 +135,11 @@ class ChatBotPage:
             "...",
             key="message",
             accept_file=True,
-            file_type=["xlsx", "txt", "docx", "pdf"],
-            on_submit=lambda: ss.update({"chat_send": True}),
+            file_type=["xlsx", "docx", "pdf"],
+            on_submit=lambda: (ss.update({"chat_send": True})),
         )
 
         if ss.chat_send and ss.message:
-            filedata = None
-            if ss.message.files != []:
-                filedata = ss.message.files[0]
-            if filedata:
-                ss.uploaded_files["temp_input"] = filedata.getvalue()
-
             if not current_chat_id:
                 new_id = str(uuid.uuid4())
                 if ss.user_id not in ss.user_chat_list:
@@ -158,11 +150,7 @@ class ChatBotPage:
                 response = chatbot.generate_answer(
                     user_input=ss.message.text,
                     chat_history=[],
-                    file=(
-                        BytesIO(ss.uploaded_files.get("temp_input"))
-                        if "temp_input" in ss.uploaded_files
-                        else None
-                    ),
+                    file=ss.message.files[0],
                     intent=ss.intent,
                 )
                 with st.chat_message("ai"):
@@ -171,11 +159,13 @@ class ChatBotPage:
                     HumanMessage(content=ss.message.text),
                     AIMessage(content=response),
                 ]
-                summary = response[:50] if len(response) >= 50 else response
+                summary = (
+                    ss.message.text[:50]
+                    if len(ss.message.text) >= 50
+                    else ss.message.text
+                )
                 ss.chat_list[new_id] = summary
                 ss.chat_intents[new_id] = ss.intent
-                if "temp_input" in ss.uploaded_files:
-                    ss.chat_uploaded_files[new_id] = ss.uploaded_files["temp_input"]
                 st.query_params["chat_id"] = new_id
                 st.rerun()
             else:
@@ -189,11 +179,7 @@ class ChatBotPage:
                 response = chatbot.generate_answer(
                     user_input=ss.message.text,
                     chat_history=chat_hist,
-                    file=(
-                        BytesIO(ss.chat_uploaded_files.get(current_chat_id))
-                        if current_chat_id in ss.chat_uploaded_files
-                        else None
-                    ),
+                    file=ss.message.files[0],
                     intent=ss.intent,
                 )
                 with st.chat_message("ai"):
@@ -203,10 +189,6 @@ class ChatBotPage:
                     AIMessage(content=response),
                 ]
                 ss.chat_intents[current_chat_id] = ss.intent
-                if "temp_input" in ss.uploaded_files:
-                    ss.chat_uploaded_files[current_chat_id] = ss.uploaded_files[
-                        "temp_input"
-                    ]
                 ss.chat_send = False
                 st.rerun()
 
