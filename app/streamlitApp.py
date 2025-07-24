@@ -1,8 +1,8 @@
 import streamlit as st
 from app.chatbot import ChatBot
 from app.chroma import VectorDB
-from langchain_core.messages import HumanMessage, AIMessage
 from io import BytesIO
+from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 from typing import Literal
 
@@ -12,6 +12,11 @@ ValidIntent = Literal["analyze_excel", "summarize_text", "chat"]
 # Prompts
 SYSTEM_MESSAGE = "Bạn là một trợ lý AI chuyên phân tích dữ liệu và tóm tắt nội dung từ các tệp Excel, văn bản, PDF và Word. Trả lời chính xác và rõ ràng theo yêu cầu của người dùng."
 SUMMARY_MESSAGE = "Dựa trên câu trả lời sau, hãy tạo một tiêu đề ngắn gọn (tối đa 7 từ) để mô tả nội dung chính của đoạn hội thoại. Chỉ trả lời tiêu đề đó."
+
+
+def clear_query_param() -> None:
+    st.query_params.clear()
+    st.rerun()
 
 
 class ChatBotPage:
@@ -25,7 +30,8 @@ class ChatBotPage:
         ss.setdefault("chat_send", False)
         ss.setdefault("delete_chat_id", None)
         ss.setdefault("intent", "chat")
-        ss.setdefault("chat_intents", {})
+        ss.setdefault("uploaded_files", {})
+        ss.setdefault("chat_uploaded_files", {})
 
     @st.cache_resource(ttl=6000, show_spinner="Đang khởi tạo ChatBot...")
     def init_model(_self):
@@ -49,7 +55,8 @@ class ChatBotPage:
         # Sidebar: User login
         st.sidebar.text_input(
             "Nhập tên người dùng",
-            key="user_id",  # , on_change=(st.query_params.clear(), st.rerun())
+            key="user_id",
+            on_change=lambda: clear_query_param(),
         )
         if ss.user_id not in ss.user_list:
             ss.user_list.append(ss.user_id)
@@ -80,12 +87,9 @@ class ChatBotPage:
         for id in ss.user_chat_list[ss.user_id]:
             col1, col2 = st.sidebar.columns([4, 1])
             title = ss.chat_list.get(id, "No Title")
-            intent_label = ss.chat_intents.get(id, "chat")
-            display_title = f"{title} ({intent_label})"
+            display_title = f"{title}"
             if col1.button(display_title, key=f"chatbtn_{id}"):
                 st.query_params["chat_id"] = id
-                if id in ss.chat_intents:
-                    ss.intent = ss.chat_intents[id]
                 st.rerun()
             if col2.button("🗑️", key=f"delete_{id}"):
                 ss.delete_chat_id = id
@@ -97,8 +101,6 @@ class ChatBotPage:
                 ss.user_chat_list[ss.user_id].remove(id)
             ss.chat_list.pop(id, None)
             ss.chat_history.pop(id, None)
-            ss.chat_intents.pop(id, None)
-            ss.chat_uploaded_files.pop(id, None)
             if query_params.get("chat_id") == id:
                 st.query_params.clear()
             ss.delete_chat_id = None
@@ -135,11 +137,19 @@ class ChatBotPage:
             "...",
             key="message",
             accept_file=True,
-            file_type=["xlsx", "docx", "pdf"],
+            file_type=["xlsx", "docx", "pdf", "txt"],
             on_submit=lambda: (ss.update({"chat_send": True})),
         )
 
         if ss.chat_send and ss.message:
+            filedata = (
+                ss.message.files[-1]
+                if hasattr(ss.message, "files") and ss.message.files
+                else None
+            )
+            if filedata:
+                ss.uploaded_files["temp_input"] = filedata.getvalue()
+
             if not current_chat_id:
                 new_id = str(uuid.uuid4())
                 if ss.user_id not in ss.user_chat_list:
@@ -150,7 +160,11 @@ class ChatBotPage:
                 response = chatbot.generate_answer(
                     user_input=ss.message.text,
                     chat_history=[],
-                    file=ss.message.files[0],
+                    file=(
+                        BytesIO(ss.uploaded_files.get("temp_input"))
+                        if "temp_input" in ss.uploaded_files
+                        else None
+                    ),
                     intent=ss.intent,
                 )
                 with st.chat_message("ai"):
@@ -159,13 +173,15 @@ class ChatBotPage:
                     HumanMessage(content=ss.message.text),
                     AIMessage(content=response),
                 ]
-                summary = (
-                    ss.message.text[:50]
-                    if len(ss.message.text) >= 50
-                    else ss.message.text
+                summary = chatbot.generate_answer(
+                    user_input="Summarise this in 5 words. Return only the summary: "
+                    + response,
+                    chat_history=[],
+                    file=None,
+                    intent="chat",
                 )
+
                 ss.chat_list[new_id] = summary
-                ss.chat_intents[new_id] = ss.intent
                 st.query_params["chat_id"] = new_id
                 st.rerun()
             else:
@@ -179,7 +195,11 @@ class ChatBotPage:
                 response = chatbot.generate_answer(
                     user_input=ss.message.text,
                     chat_history=chat_hist,
-                    file=ss.message.files[0],
+                    file=(
+                        BytesIO(ss.uploaded_files.get("temp_input"))
+                        if "temp_input" in ss.uploaded_files
+                        else None
+                    ),
                     intent=ss.intent,
                 )
                 with st.chat_message("ai"):
@@ -188,7 +208,6 @@ class ChatBotPage:
                     HumanMessage(content=ss.message.text),
                     AIMessage(content=response),
                 ]
-                ss.chat_intents[current_chat_id] = ss.intent
                 ss.chat_send = False
                 st.rerun()
 

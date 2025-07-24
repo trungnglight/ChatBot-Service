@@ -27,6 +27,7 @@ OLLAMA_API_KEY = SecretStr("ollama")
 PROMPT = PromptTemplate.from_template(
     """
 {system_message}
+Nếu câu hỏi người dùng trống, yêu cầu người dùng cung cấp câu hỏi.
 
 Lịch sử nói chuyện:
 {chat_history}
@@ -118,7 +119,22 @@ def analyze_dataframe_with_agent(df: pd.DataFrame, instruction: str) -> str:
         allow_dangerous_code=True,
     )
     safe_instruction = (
-        f"{instruction.strip()}\n\n"
+        """You are a Python data analyst with direct access to a runtime environment and can use pandas, numpy, and any built-in libraries to analyze Excel files.
+
+        You have been provided with a DataFrame called df (or dfs if multiple sheets). Do not explain how to analyze Excel files — perform the analysis directly using Python code and return summaries or results.
+
+        Your job is to:
+
+            Understand the structure and key variables of the data. 
+
+            Execute appropriate Python code using df to summarize and analyze the content.
+
+            When asked a question or given a task, do not explain the method—just execute the logic and return the result.
+
+            If the task is ambiguous, suggest the most likely interpretation, and proceed with it.
+
+            Avoid tutorials or generic guidance—focus only on solving with data."""
+        f"Instruction: {instruction.strip()}\n\n"
         "Only use the tools provided. Do not print or describe the dataframe directly."
     )
     analysis = agent.invoke(safe_instruction)
@@ -227,13 +243,18 @@ class ChatBot:
         if state["intent"] is not None:
             intent.intent = state["intent"]
         else:
-            intent = self.detect_intent(user_input)
+            if user_input:
+                intent = self.detect_intent(user_input)
 
         if file and content_type:
             if intent.intent == IntentEnum.analyze_excel:
                 print("Excel!")
                 response = analyze_excel_with_cleanup(
-                    file, intent.instruction or "Phân tích các cột của tệp Excel"
+                    file,
+                    intent.instruction
+                    or "Analyze- Summarize the sheet names and dimensions."
+                    "- For each sheet: describe columns, types, missing values, and show basic stats."
+                    "- Provide insights and suggestions for next steps.",
                 )
                 response = f"[Excel Analysis Result]\n{response}"
             elif intent.intent == IntentEnum.summarize_text:
@@ -243,21 +264,54 @@ class ChatBot:
                 )
             elif intent.intent == IntentEnum.chat:
                 print("Chat!")
-                intent = self.detect_intent(user_input)
-                if intent.intent == IntentEnum.analyze_excel:
-                    response = analyze_excel_with_cleanup(
-                        file, intent.instruction or "analyze"
-                    )
-                    response = f"[Excel Analysis Result]\n{response}"
-                elif intent.intent == IntentEnum.summarize_text:
-                    response = summarize_with_docling(
-                        file,
-                        content_type,
-                        intent.instruction or "Tóm tắt nội dung văn bản",
+                if user_input:
+                    intent = self.detect_intent(user_input)
+                    if intent.intent == IntentEnum.analyze_excel:
+                        response = analyze_excel_with_cleanup(
+                            file, intent.instruction or "analyze"
+                        )
+                        response = f"[Excel Analysis Result]\n{response}"
+                    elif intent.intent == IntentEnum.summarize_text:
+                        response = summarize_with_docling(
+                            file,
+                            content_type,
+                            intent.instruction or "Tóm tắt nội dung văn bản",
+                        )
+                else:
+                    llm_output = self.llm_chain.invoke(
+                        {
+                            "system_message": self.system_message,
+                            "question": user_input,
+                            "chat_history": chat_str,
+                        }
                     )
 
-        elif intent.intent != IntentEnum.chat:
+                    response = (
+                        llm_output.content
+                        if hasattr(llm_output, "content")
+                        else str(llm_output)
+                    )
+
+                    response = response if isinstance(response, str) else response[0]
+
+        elif intent.intent == IntentEnum.analyze_excel:
             response = f"[Error] No file was uploaded, but intent was {intent.intent}"
+        elif intent.intent == IntentEnum.summarize_text:
+            llm_output = self.llm_chain.invoke(
+                {
+                    "system_message": self.system_message,
+                    "question": "Summarise this:" + user_input,
+                    "chat_history": chat_str,
+                }
+            )
+
+            response = (
+                llm_output.content
+                if hasattr(llm_output, "content")
+                else str(llm_output)
+            )
+
+            response = response if isinstance(response, str) else response[0]
         else:
             llm_output = self.llm_chain.invoke(
                 {
