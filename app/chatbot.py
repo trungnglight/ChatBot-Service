@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 from io import BytesIO
 from tempfile import SpooledTemporaryFile
-from typing import TypedDict, BinaryIO
+from typing import TypedDict, BinaryIO, Iterator
 from enum import Enum
 from pydantic import BaseModel, SecretStr
 import magic
@@ -15,7 +15,6 @@ from langgraph.graph import StateGraph, END, START
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain.output_parsers import OutputFixingParser
 from langchain_experimental.agents import create_pandas_dataframe_agent
-from langchain.agents import AgentExecutor
 
 from docling.document_converter import DocumentConverter
 from docling_core.types.io import DocumentStream
@@ -110,7 +109,7 @@ def auto_clean_excel(file_stream: BinaryIO) -> pd.DataFrame:
 
 
 # Return the Excel agent analysis
-def analyze_dataframe_with_agent(df: pd.DataFrame, instruction: str) -> str:
+def analyze_dataframe_with_agent(df: pd.DataFrame, instruction: str) -> Iterator:
     agent = create_pandas_dataframe_agent(
         llm=ChatOpenAI(
             base_url=f"{OLLAMA_HOST}/v1/",
@@ -142,11 +141,13 @@ def analyze_dataframe_with_agent(df: pd.DataFrame, instruction: str) -> str:
         "Only use the tools provided. Do not print or describe the dataframe directly."
     )
     analysis = agent.invoke(safe_instruction)
-    return analysis if isinstance(analysis, str) else analysis["output"]
+    return analysis
 
 
 # Create Dataframe from the Excel file for the agent
-def analyze_excel_with_cleanup(file_stream: BinaryIO, instruction: str) -> str:
+def analyze_excel_with_cleanup(
+    file_stream: BinaryIO, instruction: str
+) -> Iterator | str:
     try:
         df = auto_clean_excel(file_stream)
         return analyze_dataframe_with_agent(df, instruction)
@@ -155,7 +156,9 @@ def analyze_excel_with_cleanup(file_stream: BinaryIO, instruction: str) -> str:
 
 
 # Use Docling to read file content and call LLM summarize it.
-def summarize_with_docling(file: BinaryIO, content_type: str, instruction: str) -> str:
+def summarize_with_docling(
+    file: BinaryIO, content_type: str, instruction: str
+) -> Iterator | str:
     try:
         name = {
             "application/pdf": "upload.pdf",
@@ -180,7 +183,7 @@ def summarize_with_docling(file: BinaryIO, content_type: str, instruction: str) 
             temperature=0.2,
         )
 
-        return summarizer.invoke(f"{instruction}\n\n{markdown[:5000]}").content
+        return summarizer.invoke(f"{instruction}\n\n{markdown[:5000]}")
     except Exception as e:
         return f"[Docling extraction failed] {str(e)}"
 
@@ -188,7 +191,7 @@ def summarize_with_docling(file: BinaryIO, content_type: str, instruction: str) 
 # State object containing all info needed for the model
 class State(TypedDict):
     input: str
-    response: str
+    response: Iterator
     chat_history: list[BaseMessage]
     file: SpooledTemporaryFile | BytesIO | None
     content_type: str | None
@@ -200,7 +203,6 @@ class ChatBot:
     # Constructor
     def __init__(self, system_message: str) -> None:
         self.system_message = system_message
-        requests.post(f"{OLLAMA_HOST}/api/pull", json={"model": LL_MODEL})
 
         self.llm = ChatOpenAI(
             base_url=f"{OLLAMA_HOST}/v1/",
@@ -232,12 +234,8 @@ class ChatBot:
             print(f"[Intent detection error] {e}")
             return FileIntent(intent=IntentEnum.chat)
 
-    def process_response(self, llm_output) -> str:
-        response = (
-            llm_output.content if hasattr(llm_output, "content") else str(llm_output)
-        )
-
-        response = response if isinstance(response, str) else response[0]
+    def process_response(self, llm_output) -> Iterator:
+        response = llm_output.content if hasattr(llm_output, "content") else llm_output
         return response
 
     # Get message from node
@@ -248,7 +246,6 @@ class ChatBot:
         file = state["file"]
         content_type = state["content_type"]
         response = "No answer!"
-        print("content_type: " + str(content_type))
         # Detect file type if needed
         if content_type is None and file:
             try:
@@ -320,7 +317,9 @@ class ChatBot:
                     response = self.process_response(llm_output)
         # If there is no file
         elif intent.intent == IntentEnum.analyze_excel:
-            response = f"[Error] No file was uploaded, but intent was {intent.intent}"
+            response = iter(
+                f"[Error] No file was uploaded, but intent was {intent.intent}"
+            )
         elif intent.intent == IntentEnum.summarize_text:
             llm_output = self.llm_chain.invoke(
                 {
@@ -340,12 +339,31 @@ class ChatBot:
                 }
             )
             response = self.process_response(llm_output)
-        print(f"Intent: {intent}\nResponse: {response}")
+        # print(f"Intent: {intent}\nResponse: {response}\n")
 
         return {**state, "response": response}
 
     # Get all data and pass it to the llm chain
-    def generate_answer(
+    def generate_answer_stream(
+        self,
+        user_input: str,
+        chat_history: list[BaseMessage],
+        file: SpooledTemporaryFile | BytesIO | None = None,
+        content_type: str | None = None,
+        intent: IntentEnum | None = None,
+    ) -> Iterator:
+        state: State = {
+            "input": user_input,
+            "chat_history": chat_history,
+            "response": iter([]),
+            "file": file,
+            "content_type": content_type,
+            "intent": intent,
+        }
+        result = self.graph.stream(state, stream_mode="messages")
+        return result
+
+    def generate_answer_text(
         self,
         user_input: str,
         chat_history: list[BaseMessage],
@@ -356,7 +374,7 @@ class ChatBot:
         state: State = {
             "input": user_input,
             "chat_history": chat_history,
-            "response": "",
+            "response": iter([]),
             "file": file,
             "content_type": content_type,
             "intent": intent,
@@ -367,7 +385,6 @@ class ChatBot:
 
 # Main for testing purpose.
 if __name__ == "__main__":
-    import mimetypes
 
     bot = ChatBot(
         "Bạn là một trợ lý AI chuyên phân tích dữ liệu và tóm tắt nội dung từ các tệp Excel, văn bản, PDF và Word. Trả lời chính xác và rõ ràng theo yêu cầu của người dùng."
@@ -375,33 +392,37 @@ if __name__ == "__main__":
     history: list[BaseMessage] = []
 
     while True:
-        mode = input("Enter 'chat' or 'file': ").strip().lower()
-        if mode in ["exit", "quit"]:
-            break
+        # mode = input("Enter 'chat' or 'file': ").strip().lower()
+        # if mode in ["exit", "quit"]:
+        #     break
 
-        if mode == "file":
-            file_path = input("Enter file path: ").strip()
-            instruction = input("Enter instruction: ").strip()
-            content_type, _ = mimetypes.guess_type(file_path)
-            if not content_type:
-                content_type = "application/octet-stream"
-            with open(file_path, "rb") as f:
-                file = SpooledTemporaryFile()
-                file.write(f.read())
-                file.seek(0)
-                response = bot.generate_answer(
-                    instruction, history, file=file, content_type=content_type
-                )
-                history += [
-                    HumanMessage(content=instruction),
-                    AIMessage(content=response),
-                ]
-                print("Bot:", response)
-        else:
-            user_text = input("User: ")
-            response = bot.generate_answer(user_text, history)
-            history += [
-                HumanMessage(content=user_text),
-                AIMessage(content=response),
-            ]
-            print("Bot:", response)
+        # if mode == "file":
+        #     file_path = input("Enter file path: ").strip()
+        #     instruction = input("Enter instruction: ").strip()
+        #     content_type, _ = mimetypes.guess_type(file_path)
+        #     if not content_type:
+        #         content_type = "application/octet-stream"
+        #     with open(file_path, "rb") as f:
+        #         file = SpooledTemporaryFile()
+        #         file.write(f.read())
+        #         file.seek(0)
+        #         response = bot.generate_answer(
+        #             instruction, history, file=file, content_type=content_type
+        #         )
+        #         print("Bot:")
+        #         ai_message = ""
+        #         for chunk in response:
+        #             print(chunk)
+        #             ai_message += chunk
+        #         history += [
+        #             HumanMessage(content=instruction),
+        #             AIMessage(content=ai_message),
+        #         ]
+        # else:
+        user_text = input("User: ")
+        response = bot.generate_answer_text(user_text, history)
+        print("Bot: " + response)
+        history += [
+            HumanMessage(content=user_text),
+            AIMessage(content=response),
+        ]

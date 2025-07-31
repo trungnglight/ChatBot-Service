@@ -4,7 +4,7 @@ from app.chroma import VectorDB
 from io import BytesIO
 from langchain_core.messages import HumanMessage, AIMessage
 import uuid
-from typing import Literal
+from typing import Literal, Iterator, Iterable
 
 # Type for intent
 ValidIntent = Literal["analyze_excel", "summarize_text", "chat"]
@@ -14,10 +14,10 @@ SYSTEM_MESSAGE = "Bạn là một trợ lý AI chuyên phân tích dữ liệu v
 SUMMARY_MESSAGE = "Dựa trên câu trả lời sau, hãy tạo một tiêu đề ngắn gọn (tối đa 7 từ) để mô tả nội dung chính của đoạn hội thoại. Chỉ trả lời tiêu đề đó."
 
 
-# Clear query parameters from link as WidgetCallback
-def clear_query_param() -> None:
-    st.query_params.clear()
-    st.rerun()
+def chatbot_stream_wrapper(stream: Iterator):
+    for message_chunk, _ in stream:
+        if message_chunk.content:
+            yield message_chunk.content
 
 
 class ChatBotPage:
@@ -62,7 +62,7 @@ class ChatBotPage:
         st.sidebar.text_input(
             "Nhập tên người dùng",
             key="user_id",
-            on_change=lambda: clear_query_param(),
+            on_change=st.query_params.clear(),
         )
         if ss.user_id not in ss.user_list:
             ss.user_list.append(ss.user_id)
@@ -171,7 +171,7 @@ class ChatBotPage:
                     st.write(ss.message.text)
 
                 # Generate AI message
-                response = chatbot.generate_answer(
+                response = chatbot.generate_answer_stream(
                     user_input=ss.message.text,
                     chat_history=[],
                     file=(
@@ -182,19 +182,19 @@ class ChatBotPage:
                     intent=ss.intent,
                 )
 
-                # with st.chat_message("ai"):
-                #     st.write(response)
+                with st.chat_message("ai"):
+                    full_response = st.write_stream(chatbot_stream_wrapper(response))
 
                 # Write result to chat history
                 ss.chat_history[new_id] = [
                     HumanMessage(content=ss.message.text),
-                    AIMessage(content=response),
+                    AIMessage(content=full_response),
                 ]
 
                 # Create a summary as title for the chat and save it
-                summary = chatbot.generate_answer(
+                summary = chatbot.generate_answer_text(
                     user_input="Summarise this in 5 words. Return only the summary: "
-                    + response,
+                    + full_response,
                     chat_history=[],
                     file=None,
                     intent="chat",
@@ -217,7 +217,7 @@ class ChatBotPage:
 
                 # Get chat history and generate AI message with it
                 chat_hist = ss.chat_history.setdefault(current_chat_id, [])
-                response = chatbot.generate_answer(
+                response = chatbot.generate_answer_stream(
                     user_input=ss.message.text,
                     chat_history=chat_hist,
                     file=(
@@ -227,13 +227,13 @@ class ChatBotPage:
                     ),
                     intent=ss.intent,
                 )
-                # with st.chat_message("ai"):
-                #     st.write(response)
+                with st.chat_message("ai"):
+                    full_response = st.write_stream(chatbot_stream_wrapper(response))
 
                 # Add new messages to chat history
                 ss.chat_history[current_chat_id] = chat_hist + [
                     HumanMessage(content=ss.message.text),
-                    AIMessage(content=response),
+                    AIMessage(content=full_response),
                 ]
                 ss.chat_send = False
                 st.rerun()
